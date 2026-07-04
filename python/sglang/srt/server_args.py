@@ -105,7 +105,7 @@ from sglang.utils import is_in_ci
 logger = logging.getLogger(__name__)
 
 
-def apply_deepseek_v4_sm89_defaults(server_args) -> None:
+def apply_deepseek_v4_sm89_defaults(server_args, is_fp4_experts: bool) -> None:
     # Ada/L20 lacks the Hopper/Blackwell-only DeepGEMM and topk_v2 paths used by
     # DeepSeek-V4's FP8 indexer and MHC prenorm fast paths.
     envs.SGLANG_OPT_FP8_WO_A_GEMM.set(False)
@@ -126,7 +126,7 @@ def apply_deepseek_v4_sm89_defaults(server_args) -> None:
                 "set it to 'triton' or 'torch'."
             )
 
-    if server_args.moe_runner_backend == "auto":
+    if server_args.moe_runner_backend == "auto" and is_fp4_experts:
         server_args.moe_runner_backend = "marlin"
         logger.info("Use marlin as MoE runner backend on SM89 for DeepseekV4")
     elif server_args.moe_runner_backend in (
@@ -134,10 +134,17 @@ def apply_deepseek_v4_sm89_defaults(server_args) -> None:
         "flashinfer_mxfp4",
         "flashinfer_cutedsl",
     ):
+        recommended_backend = "marlin" if is_fp4_experts else "triton"
         raise ValueError(
             "DeepSeek-V4 on SM89/RTX 4090 does not support "
             f"--moe-runner-backend {server_args.moe_runner_backend!r}; "
-            "use --moe-runner-backend marlin."
+            f"use --moe-runner-backend {recommended_backend}."
+        )
+    elif server_args.moe_runner_backend == "marlin" and not is_fp4_experts:
+        raise ValueError(
+            "DeepSeek-V4 on SM89/RTX 4090 only supports "
+            "--moe-runner-backend marlin for FP4 expert checkpoints. "
+            "Use --moe-runner-backend triton for FP8 expert checkpoints."
         )
 
 
@@ -3757,7 +3764,8 @@ class ServerArgs:
         if parse_connector_type(self.model_path) == ConnectorType.INSTANCE:
             return
 
-        hf_config = self.get_model_config().hf_config
+        model_config = self.get_model_config()
+        hf_config = model_config.hf_config
         model_arch = hf_config.architectures[0]
 
         _hybrid_spec = get_linear_attn_spec_by_arch(model_arch)
@@ -4048,7 +4056,9 @@ class ServerArgs:
             validate_deepseek_v4_cp(self)
 
             if is_sm89_supported():
-                apply_deepseek_v4_sm89_defaults(self)
+                apply_deepseek_v4_sm89_defaults(
+                    self, is_fp4_experts=model_config.is_fp4_experts
+                )
             elif is_sm120_supported():
                 if self.moe_runner_backend == "auto":
                     self.moe_runner_backend = "marlin"

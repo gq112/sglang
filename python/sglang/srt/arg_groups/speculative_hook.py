@@ -360,19 +360,31 @@ def _resolve_dspark_sm89_moe_backend(server_args: ServerArgs) -> None:
     if not is_sm89_supported():
         return
 
+    try:
+        is_fp4_experts = server_args.get_model_config().is_fp4_experts
+    except AttributeError:
+        is_fp4_experts = True
+
     backend = server_args.speculative_moe_runner_backend
-    if backend in (None, "auto"):
+    if backend in (None, "auto") and is_fp4_experts:
         server_args.speculative_moe_runner_backend = "marlin"
         logger.info(
             "Use marlin as speculative MoE runner backend on SM89 for DSpark"
         )
         return
+    if backend == "marlin" and not is_fp4_experts:
+        raise ValueError(
+            "DSpark on SM89/RTX 4090 only supports "
+            "--speculative-moe-runner-backend marlin for FP4 expert checkpoints. "
+            "Use --speculative-moe-runner-backend triton for FP8 expert checkpoints."
+        )
 
     if backend in ("deep_gemm", "flashinfer_mxfp4", "flashinfer_cutedsl"):
+        recommended_backend = "marlin" if is_fp4_experts else "triton"
         raise ValueError(
             "DSpark on SM89/RTX 4090 does not support "
             f"--speculative-moe-runner-backend {backend!r}; "
-            "use --speculative-moe-runner-backend marlin."
+            f"use --speculative-moe-runner-backend {recommended_backend}."
         )
 
 

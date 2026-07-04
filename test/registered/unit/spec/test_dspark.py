@@ -83,6 +83,11 @@ def _make_server_args(**overrides):
     return SimpleNamespace(**base)
 
 
+def _attach_model_config(args, *, is_fp4_experts):
+    args.get_model_config = lambda: SimpleNamespace(is_fp4_experts=is_fp4_experts)
+    return args
+
+
 class TestHandleDspark(CustomTestCase):
     def test_pins_steps_and_topk_and_block_size(self):
         args = _make_server_args()
@@ -136,13 +141,37 @@ class TestHandleDspark(CustomTestCase):
         self.assertFalse(args.enable_mixed_chunk)
 
     def test_sm89_auto_speculative_moe_backend_uses_marlin(self):
-        args = _make_server_args(speculative_moe_runner_backend="auto")
+        args = _attach_model_config(
+            _make_server_args(speculative_moe_runner_backend="auto"),
+            is_fp4_experts=True,
+        )
         with patch("sglang.srt.utils.common.is_sm89_supported", return_value=True):
             _handle_dspark(args)
         self.assertEqual(args.speculative_moe_runner_backend, "marlin")
 
+    def test_sm89_non_fp4_auto_speculative_moe_backend_stays_auto(self):
+        args = _attach_model_config(
+            _make_server_args(speculative_moe_runner_backend="auto"),
+            is_fp4_experts=False,
+        )
+        with patch("sglang.srt.utils.common.is_sm89_supported", return_value=True):
+            _handle_dspark(args)
+        self.assertEqual(args.speculative_moe_runner_backend, "auto")
+
+    def test_sm89_non_fp4_rejects_marlin_speculative_moe_backend(self):
+        args = _attach_model_config(
+            _make_server_args(speculative_moe_runner_backend="marlin"),
+            is_fp4_experts=False,
+        )
+        with patch("sglang.srt.utils.common.is_sm89_supported", return_value=True):
+            with self.assertRaisesRegex(ValueError, "FP4 expert"):
+                _handle_dspark(args)
+
     def test_sm89_rejects_unsupported_speculative_moe_backend(self):
-        args = _make_server_args(speculative_moe_runner_backend="flashinfer_mxfp4")
+        args = _attach_model_config(
+            _make_server_args(speculative_moe_runner_backend="flashinfer_mxfp4"),
+            is_fp4_experts=True,
+        )
         with patch("sglang.srt.utils.common.is_sm89_supported", return_value=True):
             with self.assertRaisesRegex(ValueError, "marlin"):
                 _handle_dspark(args)
