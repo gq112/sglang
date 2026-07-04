@@ -13,10 +13,8 @@ FP8_DTYPE = torch.float8_e4m3fn
 
 @triton.jit
 def _paged_dot_relu_kernel(
-    kv_val_ptr,
-    kv_srow,
-    kv_sdim,
-    kv_sc_ptr,
+    kv_fp8_ptr,
+    kv_f32_ptr,
     q_ptr,
     q_sb,
     q_snh,
@@ -32,6 +30,8 @@ def _paged_dot_relu_kernel(
     NH: tl.constexpr,
     HD: tl.constexpr,
     BS: tl.constexpr,
+    PAGE_BYTES: tl.constexpr,
+    SCALE_OFFSET_F32: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_pg = tl.program_id(1)
@@ -49,13 +49,16 @@ def _paged_dot_relu_kernel(
     kv_offs = kv_start + p_offs
     valid = (kv_offs < seq_len) & (kv_offs < max_seq_len)
 
-    row_offs = page_id * BS + p_offs
     d_offs = tl.arange(0, HD)
-    kv_2d = row_offs[:, None] * kv_srow + d_offs[None, :] * kv_sdim
-    kv_fp8 = tl.load(kv_val_ptr + kv_2d, mask=valid[:, None], other=0.0)
+    kv_2d = page_id * PAGE_BYTES + p_offs[:, None] * HD + d_offs[None, :]
+    kv_fp8 = tl.load(kv_fp8_ptr + kv_2d, mask=valid[:, None], other=0.0)
     kv_f32 = kv_fp8.to(tl.float32)
 
-    kv_scale = tl.load(kv_sc_ptr + row_offs, mask=valid, other=0.0)
+    kv_scale = tl.load(
+        kv_f32_ptr + page_id * (PAGE_BYTES // 4) + SCALE_OFFSET_F32 + p_offs,
+        mask=valid,
+        other=0.0,
+    )
 
     h_offs = tl.arange(0, NH)
     q_2d = h_offs[:, None] * q_snh + d_offs[None, :] * q_shd
@@ -100,15 +103,7 @@ def fp8_paged_mqa_logits_triton_sm89(
     total_dim = block_size * (head_dim + 4)
     scale_offset = block_size * head_dim
 
-    kvcache_flat = kvcache_fp8.view(total_pages, total_dim)
-    kv_val_u8 = kvcache_flat[:, :scale_offset].contiguous()
-    kv_val_fp8 = kv_val_u8.view(dtype=FP8_DTYPE).reshape(
-        total_pages * block_size, head_dim
-    )
-    kv_sc_u8 = kvcache_flat[:, scale_offset:].contiguous()
-    kv_sc_f32 = kv_sc_u8.view(dtype=torch.float32).reshape(total_pages * block_size)
-
-    q_f32 = q_fp8[:, 0].to(torch.float32)
+    q_fp8 = q_fp8[:, 0]
     logits = torch.full(
         (batch_size, max_seq_len),
         float("-inf"),
@@ -116,16 +111,20 @@ def fp8_paged_mqa_logits_triton_sm89(
         device=q_fp8.device,
     )
 
+    # Typed views over the original page buffer avoid copying the full indexer
+    # cache on every C4 indexer invocation.
+    kvcache_flat = kvcache_fp8.view(total_pages, total_dim)
+    kv_fp8_view = kvcache_flat.view(dtype=FP8_DTYPE)
+    kv_f32_view = kvcache_flat.view(dtype=torch.float32)
+
     max_pages = triton.cdiv(max_seq_len, block_size)
     _paged_dot_relu_kernel[(batch_size, max_pages)](
-        kv_val_fp8,
-        kv_val_fp8.stride(0),
-        kv_val_fp8.stride(1),
-        kv_sc_f32,
-        q_f32,
-        q_f32.stride(0),
-        q_f32.stride(1),
-        q_f32.stride(2),
+        kv_fp8_view,
+        kv_f32_view,
+        q_fp8,
+        q_fp8.stride(0),
+        q_fp8.stride(1),
+        q_fp8.stride(2),
         weight,
         weight.stride(0),
         page_table,
@@ -137,6 +136,8 @@ def fp8_paged_mqa_logits_triton_sm89(
         NH=num_heads,
         HD=head_dim,
         BS=block_size,
+        PAGE_BYTES=total_dim,
+        SCALE_OFFSET_F32=scale_offset // 4,
         num_warps=4,
         num_stages=4,
     )
