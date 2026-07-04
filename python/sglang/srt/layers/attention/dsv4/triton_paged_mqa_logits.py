@@ -103,16 +103,17 @@ def fp8_paged_mqa_logits_triton_sm89(
     total_dim = block_size * (head_dim + 4)
     scale_offset = block_size * head_dim
 
-    q_fp8 = q_fp8[:, 0]
+    q_f32 = q_fp8[:, 0].to(torch.float32)
     logits = torch.full(
         (batch_size, max_seq_len),
         float("-inf"),
         dtype=torch.float32,
-        device=q_fp8.device,
+        device=q_f32.device,
     )
 
     # Typed views over the original page buffer avoid copying the full indexer
-    # cache on every C4 indexer invocation.
+    # cache on every C4 indexer invocation. Keep the query conversion unchanged
+    # from the previous path to avoid changing the dot-product precision chain.
     kvcache_flat = kvcache_fp8.view(total_pages, total_dim)
     kv_fp8_view = kvcache_flat.view(dtype=FP8_DTYPE)
     kv_f32_view = kvcache_flat.view(dtype=torch.float32)
@@ -121,10 +122,10 @@ def fp8_paged_mqa_logits_triton_sm89(
     _paged_dot_relu_kernel[(batch_size, max_pages)](
         kv_fp8_view,
         kv_f32_view,
-        q_fp8,
-        q_fp8.stride(0),
-        q_fp8.stride(1),
-        q_fp8.stride(2),
+        q_f32,
+        q_f32.stride(0),
+        q_f32.stride(1),
+        q_f32.stride(2),
         weight,
         weight.stride(0),
         page_table,
