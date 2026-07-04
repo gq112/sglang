@@ -105,13 +105,38 @@ from sglang.utils import is_in_ci
 logger = logging.getLogger(__name__)
 
 
-def apply_deepseek_v4_sm89_defaults() -> None:
+def apply_deepseek_v4_sm89_defaults(server_args) -> None:
     # Ada/L20 lacks the Hopper/Blackwell-only DeepGEMM and topk_v2 paths used by
     # DeepSeek-V4's FP8 indexer and MHC prenorm fast paths.
     envs.SGLANG_OPT_FP8_WO_A_GEMM.set(False)
     envs.SGLANG_OPT_USE_TOPK_V2.set(False)
     envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.set(False)
     envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
+
+    if not envs.SGLANG_SM120_FLASHMLA_BACKEND.is_set():
+        envs.SGLANG_SM120_FLASHMLA_BACKEND.set("triton")
+    else:
+        flashmla_backend = envs.SGLANG_SM120_FLASHMLA_BACKEND.get()
+        if flashmla_backend not in ("triton", "torch"):
+            raise ValueError(
+                "DeepSeek-V4 on SM89/RTX 4090 cannot use "
+                f"SGLANG_SM120_FLASHMLA_BACKEND={flashmla_backend!r}; "
+                "set it to 'triton' or 'torch'."
+            )
+
+    if server_args.moe_runner_backend == "auto":
+        server_args.moe_runner_backend = "marlin"
+        logger.info("Use marlin as MoE runner backend on SM89 for DeepseekV4")
+    elif server_args.moe_runner_backend in (
+        "deep_gemm",
+        "flashinfer_mxfp4",
+        "flashinfer_cutedsl",
+    ):
+        raise ValueError(
+            "DeepSeek-V4 on SM89/RTX 4090 does not support "
+            f"--moe-runner-backend {server_args.moe_runner_backend!r}; "
+            "use --moe-runner-backend marlin."
+        )
 
 
 # Define constants
@@ -1548,6 +1573,14 @@ class ServerArgs:
         Optional[int],
         "DFLASH only. Block size (verify window length). Alias of --speculative-num-draft-tokens for DFLASH.",
     ] = None
+    speculative_dspark_block_size: A[
+        Optional[int],
+        "DSpark only. Block size (draft block length). Alias of --speculative-num-draft-tokens for DSpark.",
+    ] = None
+    speculative_dspark_confidence_threshold: A[
+        float,
+        "DSpark only. Truncate the draft block at the first position whose confidence-head probability falls below this threshold. 0 disables truncation (verify the full block).",
+    ] = 0.0
     speculative_accept_threshold_single: A[
         float,
         "Accept a draft token if its probability in the target model is greater than this threshold.",
@@ -4013,7 +4046,7 @@ class ServerArgs:
             validate_deepseek_v4_cp(self)
 
             if is_sm89_supported():
-                apply_deepseek_v4_sm89_defaults()
+                apply_deepseek_v4_sm89_defaults(self)
             elif is_sm120_supported():
                 if self.moe_runner_backend == "auto":
                     self.moe_runner_backend = "marlin"
