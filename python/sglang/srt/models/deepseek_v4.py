@@ -138,6 +138,7 @@ from sglang.srt.utils import (
     get_bool_env_var,
     is_gfx95_supported,
     is_gfx942_supported,
+    is_sm89_supported,
     log_info_on_rank0,
     make_layers,
 )
@@ -151,7 +152,8 @@ if _is_npu:
 
 logger = logging.getLogger(__name__)
 
-_FP8_WO_A_GEMM = envs.SGLANG_OPT_FP8_WO_A_GEMM.get()
+_is_sm89 = is_sm89_supported()
+_FP8_WO_A_GEMM = envs.SGLANG_OPT_FP8_WO_A_GEMM.get() and not _is_sm89
 _MHC_POST_MULT_VALUE = 2.0
 
 
@@ -159,7 +161,8 @@ def _is_fused_mhc_post_pre_enabled() -> bool:
     # The fused path directly reuses TileLang mhc_post/mhc_pre kernels and their
     # tensor layout assumptions, so keep it disabled when either dependency is off.
     return (
-        envs.SGLANG_OPT_FUSE_MHC_POST_PRE.get()
+        not _is_sm89
+        and envs.SGLANG_OPT_FUSE_MHC_POST_PRE.get()
         and envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get()
         and envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get()
     )
@@ -1253,7 +1256,7 @@ class DeepseekV4DecoderLayer(nn.Module):
             )
             return y, post, comb, False
 
-        if envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get():
+        if envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get() and not _is_sm89:
             from sglang.srt.layers.mhc import mhc_pre
 
             norm_kwargs = {}
@@ -1337,7 +1340,7 @@ class DeepseekV4DecoderLayer(nn.Module):
         if _is_npu:
             return torch.ops.custom.npu_hc_post(x, residual, post, comb)
 
-        if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get():
+        if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get() and not _is_sm89:
             from sglang.srt.layers.mhc import mhc_post
 
             return mhc_post(x, residual, post, comb)
@@ -2142,7 +2145,7 @@ class DeepseekV4ForCausalLM(nn.Module):
         if self._mhc_prewarmed_at_load:
             return
         self._mhc_prewarmed_at_load = True
-        if _is_npu or not (
+        if _is_sm89 or _is_npu or not (
             envs.SGLANG_DSV4_MHC_PREWARM.get()
             and envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get()
         ):

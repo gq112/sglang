@@ -111,7 +111,9 @@ def apply_deepseek_v4_sm89_defaults(server_args) -> None:
     envs.SGLANG_OPT_FP8_WO_A_GEMM.set(False)
     envs.SGLANG_OPT_USE_TOPK_V2.set(False)
     envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.set(False)
+    envs.SGLANG_OPT_USE_TILELANG_MHC_POST.set(False)
     envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)
+    envs.SGLANG_DSV4_MHC_PREWARM.set(False)
 
     if not envs.SGLANG_SM120_FLASHMLA_BACKEND.is_set():
         envs.SGLANG_SM120_FLASHMLA_BACKEND.set("triton")
