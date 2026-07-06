@@ -2757,7 +2757,6 @@ class ServerArgs:
         from sglang.srt.arg_groups.speculative_hook import handle_speculative_decoding
 
         handle_speculative_decoding(self)
-        self._handle_dspark_cpu_offload_cuda_graph_compatibility()
 
         # Validate the CuteDSL A2A token budget now that num_tokens_per_bs is final.
         self._validate_cutedsl_a2a_token_budget()
@@ -5643,22 +5642,6 @@ class ServerArgs:
                 f"{required_per_rank}` or lower the relevant limit "
                 f"(e.g. --max-prefill-tokens) to <= {max_cutedsl_tokens}."
             )
-
-    def _handle_dspark_cpu_offload_cuda_graph_compatibility(self):
-        if self.speculative_algorithm != "DSPARK" or self.cpu_offload_gb <= 0:
-            return
-        if (
-            self.cuda_graph_config.decode.backend != Backend.DISABLED
-            or self.cuda_graph_config.prefill.backend != Backend.DISABLED
-        ):
-            logger.warning(
-                "Cuda graph is disabled because DSpark speculative decoding with "
-                "CPU offload uses dynamic host-to-device weight movement and has "
-                "not been validated for graph capture."
-            )
-        self.cuda_graph_config.decode.backend = Backend.DISABLED
-        self.cuda_graph_config.prefill.backend = Backend.DISABLED
-        self.disable_cuda_graph = True
 
     def _handle_a2a_moe(self):
         if self.enable_deepep_waterfill and self.moe_a2a_backend != "deepep":
