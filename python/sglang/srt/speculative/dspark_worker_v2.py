@@ -97,6 +97,8 @@ class _DSparkRefineRefs:
         org_vocab_start,
         pad_mask,
         block_size,
+        vocab_size,
+        safe_token_id,
         tp_size,
         tp_group_device,
         use_confidence,
@@ -109,6 +111,8 @@ class _DSparkRefineRefs:
         self.org_vocab_start = int(org_vocab_start)
         self.pad_mask = pad_mask
         self.block_size = int(block_size)
+        self.vocab_size = int(vocab_size)
+        self.safe_token_id = int(safe_token_id)
         self.tp_size = int(tp_size)
         self.tp_group_device = tp_group_device
         self.use_confidence = bool(use_confidence)
@@ -131,7 +135,11 @@ def _refine_block_markov_sharded(
     out_tokens = torch.empty(
         (bs, block_size + 1), dtype=torch.int64, device=block_hidden.device
     )
-    out_tokens[:, 0] = seeds.view(-1).to(torch.int64)
+    seeds = seeds.view(-1).to(torch.int64)
+    safe_seed = torch.full_like(seeds, refs.safe_token_id)
+    out_tokens[:, 0] = torch.where(
+        (seeds >= 0) & (seeds < refs.vocab_size), seeds, safe_seed
+    )
     markov_embeds = [] if refs.use_confidence else None
 
     normed_hidden = refs.norm(block_hidden)
@@ -149,7 +157,13 @@ def _refine_block_markov_sharded(
                 op=torch.distributed.ReduceOp.MAX,
                 group=refs.tp_group_device,
             )
-        out_tokens[:, i + 1] = _dspark_decode_index(packed)
+        next_token = _dspark_decode_index(packed)
+        safe_next_token = torch.full_like(next_token, refs.safe_token_id)
+        out_tokens[:, i + 1] = torch.where(
+            (next_token >= 0) & (next_token < refs.vocab_size),
+            next_token,
+            safe_next_token,
+        )
         if refs.use_confidence:
             markov_embeds.append(prev_embed)
 
@@ -508,6 +522,9 @@ class DSparkWorkerV2(BaseSpecWorker):
 
         tp_size = get_tensor_model_parallel_world_size()
         tp_group_device = get_tp_group().device_group if tp_size > 1 else None
+        safe_token_id = self.noise_token_id
+        if safe_token_id < 0 or safe_token_id >= vocab_size:
+            safe_token_id = 0
 
         return _DSparkRefineRefs(
             norm=self._draft_inner.shared_head.norm,
@@ -518,6 +535,8 @@ class DSparkWorkerV2(BaseSpecWorker):
             org_vocab_start=org_vocab_start,
             pad_mask=pad_mask,
             block_size=self.block_size,
+            vocab_size=vocab_size,
+            safe_token_id=safe_token_id,
             tp_size=tp_size,
             tp_group_device=tp_group_device,
             use_confidence=self.use_confidence,
