@@ -137,6 +137,8 @@ class SchedulerInvariantChecker:
         return leak, msg
 
     def _check_swa_pool(self, ps: PoolStats, uncached: int = 0) -> Tuple[bool, str]:
+        if not self.swa_tokens_per_layer:
+            return False, ""
         return self._check_pool_invariant(
             "swa",
             ps.swa_available_size,

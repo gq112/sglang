@@ -306,7 +306,12 @@ class SchedulerPoolStatsObserver:
             full_token_usage = 0.0
         else:
             full_token_usage = full_num_used / self.full_tokens_per_layer
-        swa_token_usage = swa_num_used / self.swa_tokens_per_layer
+        if not self.swa_tokens_per_layer:
+            swa_num_used = 0
+            swa_available_size = 0
+            swa_token_usage = 0.0
+        else:
+            swa_token_usage = swa_num_used / self.swa_tokens_per_layer
 
         return PoolStats(
             is_hybrid_swa=True,
