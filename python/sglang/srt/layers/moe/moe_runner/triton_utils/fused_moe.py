@@ -90,6 +90,8 @@ padding_size = get_moe_padding_size(_use_aiter)
 
 
 def _use_moe_sum_reduce_torch_compile(num_tokens: int) -> bool:
+    if get_bool_env_var("SGLANG_DISABLE_MOE_SUM_REDUCE_TORCH_COMPILE"):
+        return False
     return num_tokens <= 32 and not is_batch_invariant_mode_enabled()
 
 
